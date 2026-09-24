@@ -94,6 +94,26 @@
       "valid": false,
       "emittedBy": "src/checks.ts (runValidationChecks fallback when no specific code applies)",
       "since": "v1"
+    },
+    {
+      "code": "TRUSTLINE_UNAUTHORIZED",
+      "description": "Trustline exists but is not authorized by the issuer.",
+      "accountFunded": true,
+      "trustlineExists": true,
+      "xlmReserveMet": true,
+      "valid": false,
+      "emittedBy": "src/checks.ts",
+      "since": "v1"
+    },
+    {
+      "code": "MAINTAINER_SKIPPED",
+      "description": "Validation checks skipped because the actor is a maintainer (`skip_for_maintainers: true`).",
+      "accountFunded": true,
+      "trustlineExists": true,
+      "xlmReserveMet": true,
+      "valid": true,
+      "emittedBy": "src/index.ts",
+      "since": "v1"
     }
   ]
 }
