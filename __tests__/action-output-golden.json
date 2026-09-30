@@ -1,6 +1,6 @@
 [
   "account_funded",
-  "actual_network_passphrase",
+  "assets_trustline_status",
   "asset_balance",
   "asset_code",
   "asset_issuer",
@@ -33,6 +33,7 @@
   "timing_total_ms",
   "timings_json",
   "trustline_exists",
+  "trustlines_summary",
   "validated_at",
   "xlm_balance"
 ]
