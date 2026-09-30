@@ -1,6 +1,6 @@
 [
   "account_funded",
-  "assets_trustline_status",
+  "actual_network_passphrase",
   "asset_balance",
   "asset_code",
   "asset_issuer",

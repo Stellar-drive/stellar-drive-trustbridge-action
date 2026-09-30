@@ -1999,7 +1999,8 @@ async function run(): Promise<void> {
     friendbotSuccess,
     friendbotTransactionHash,
     conflictReport,
-    assetsTrustlineStatus: multiAssetResults,
+    checkRunId,
+    checkRunConclusion,
   });
 
   // ---------------------------------------------------------------------------
