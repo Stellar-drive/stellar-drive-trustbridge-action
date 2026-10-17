@@ -934,6 +934,31 @@ outputs:
       Human-readable count of additional assets with trustlines, formatted as
       "N of M additional trustlines present".
 
+  # ── Batch mode outputs (stellar_addresses / assignee_address_map) ───────
+  #
+  # These are only populated when the action runs in batch mode over multiple
+  # addresses. Single-address runs do not set them, so they read as empty
+  # strings in workflow expressions rather than zero — guard consumers with
+  # `if: steps.bridge.outputs.batch_total != ''` before branching on them.
+  batch_summary_json:
+    description: >-
+      JSON object summarizing the batch run, as produced by buildBatchSummary in
+      src/batch.ts. Fields: `total` (number of addresses validated), `passed`
+      (count that passed every check), `failed` (count that did not),
+      `failures` (array of {address, reason} for each failed address), and
+      `failureTaxonomy` (counts by class: accountNotFunded, trustlineMissing,
+      reserveInsufficient, horizonError, invalidAddress). Empty in single-address mode.
+  batch_passed_count:
+    description: >-
+      Number of addresses that passed every validation check (numeric string).
+      Gate a matrix job with `if: steps.bridge.outputs.batch_failed_count == '0'`.
+      Empty in single-address mode.
+  batch_failed_count:
+    description: >-
+      Number of addresses that failed at least one validation check (numeric
+      string). Each entry appears in the `failures` array of
+      `batch_summary_json` with a human-readable reason. Empty in single-address mode.
+
 runs:
   using: "node20"
   main: "dist/index.js"

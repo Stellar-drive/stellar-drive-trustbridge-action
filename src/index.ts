@@ -58,6 +58,7 @@ import {
   resolveGitHubAuthToken,
   resolveInput,
   resolveMaintainerSkipInput,
+  resolveReadyLabelInputs,
 } from "./inputs";
 import { formatFailureSummary } from "./summary";
 import { setValidationOutputs, writeValidationJson, buildConflictReport, formatConflictReportMarkdown } from "./outputs";
@@ -378,19 +379,33 @@ export async function handleAutoUnassign(
   }
 }
 
+/**
+ * Resolve the ready-state label pair, honouring the deprecated aliases that
+ * action.yml still declares. See `resolveReadyLabelInputs` for the precedence
+ * rules and the whitespace-only-as-unset rationale. (Issue #669)
+ */
 function resolveConfiguredReadyLabels(): {
   passLabel: string;
   failLabel: string;
 } {
-  const passLabel = (
-    core.getInput("pass_label") ||
-    ""
-  ).trim();
-  const failLabel = (
-    core.getInput("fail_label") ||
-    ""
-  ).trim();
-  return { passLabel, failLabel };
+  const resolved = resolveReadyLabelInputs({
+    passLabel: core.getInput("pass_label"),
+    readyPassLabel: core.getInput("ready_pass_label"),
+    readyLabelPass: core.getInput("ready_label_pass"),
+    failLabel: core.getInput("fail_label"),
+    readyFailLabel: core.getInput("ready_fail_label"),
+    readyLabelFail: core.getInput("ready_label_fail"),
+  });
+
+  if (resolved.usedDeprecatedAlias) {
+    logger.warn(
+      "Using a deprecated ready-label input alias. Migrate to pass_label/fail_label; " +
+        "the aliases (ready_pass_label, ready_label_pass, ready_fail_label, " +
+        "ready_label_fail) are retained for backward compatibility and may be removed.",
+    );
+  }
+
+  return { passLabel: resolved.passLabel, failLabel: resolved.failLabel };
 }
 
 async function run(): Promise<void> {
