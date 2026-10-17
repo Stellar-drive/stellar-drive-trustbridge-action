@@ -156,23 +156,13 @@
       "since": "v1"
     },
     {
-      "code": "CLAWBACK_STRICT_MODE",
-      "description": "At least one evaluated asset is blocked by `clawback_strict_mode: true` because its trustline has clawback enabled. Emitted per row in `batch_summary_json` (Issue #725) so batch consumers can attribute the failure to the policy rather than to a missing trustline.",
+      "code": "SAC_ISSUER_NOT_VERIFIABLE",
+      "description": "The asset is issued by a Soroban Stellar Asset Contract (C-address). SAC balances are never exposed as classic Horizon trustlines, so the balance cannot be confirmed or denied by this check. Verify the balance on the Stellar Lab contract page or via Soroban RPC `getContractData`.",
       "accountFunded": true,
-      "trustlineExists": true,
+      "trustlineExists": false,
       "xlmReserveMet": true,
       "valid": false,
-      "emittedBy": "src/batch.ts (runBatchValidation, buildBatchSummary)",
-      "since": "v1"
-    },
-    {
-      "code": "INVALID_ADDRESS",
-      "description": "The entry is not a syntactically valid Stellar address, so no Horizon query was made for it.",
-      "accountFunded": false,
-      "trustlineExists": false,
-      "xlmReserveMet": false,
-      "valid": false,
-      "emittedBy": "src/batch.ts (runBatchValidation)",
+      "emittedBy": "src/checks.ts (runAccountChecks, when asset_issuer is a C-address)",
       "since": "v1"
     }
   ]
