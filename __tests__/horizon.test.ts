@@ -1207,13 +1207,24 @@ describe('fetchClaimableBalanceCount', () => {
     expect(result).toBe(0);
   });
 
+  it('returns 0 when the claimant endpoint responds with 404', async () => {
+    const fetchFn = jest.fn().mockResolvedValue({ ok: false, status: 404 });
+    const result = await fetchClaimableBalanceCount(PRIMARY_HORIZON, TEST_ADDRESS, fetchFn as any);
+    expect(result).toBe(0);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
   it('returns count when _embedded.records is populated', async () => {
     const fetchFn = jest.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ _embedded: { records: [1, 2, 3] } }),
     });
-    const result = await fetchClaimableBalanceCount('https://horizon.stellar.org', 'G123', fetchFn as any);
+    const result = await fetchClaimableBalanceCount(PRIMARY_HORIZON, TEST_ADDRESS, fetchFn as any);
     expect(result).toBe(3);
+    expect(fetchFn).toHaveBeenCalledWith(
+      `${PRIMARY_HORIZON}/claimable_balances?claimant=${encodeURIComponent(TEST_ADDRESS)}&limit=5`,
+      expect.objectContaining({ method: 'GET' }),
+    );
   });
 
   it('returns count when records is populated directly', async () => {

@@ -27,15 +27,9 @@ import {
   STELLAR_BASE_RESERVE_XLM,
   STELLAR_MIN_ACCOUNT_BALANCE_XLM,
 } from '../src/checks';
-import { HorizonAccount } from '../src/horizon';
-import { formatCommentBody, CommentConfig } from '../src/comment';
-import {
-  buildSarifOutput,
-  unauthorizedTrustlineSarifSeverity,
-  TRUSTLINE_RULE_ID,
-  UNAUTHORIZED_TRUSTLINE_RULE_ID,
-} from '../src/sarif';
-import { parseUnauthorizedTrustlinePolicy } from '../src/inputs';
+import { HorizonAccount, fetchClaimableBalanceCount } from '../src/horizon';
+import { formatCommentBody } from '../src/comment';
+import { toActionOutputs } from '../src/outputs';
 
 const USDC_ISSUER = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
 const TEST_ADDRESS = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
@@ -1254,6 +1248,9 @@ describe('claimable-balance-aware funded definition (Issue #260)', () => {
     expect(resultWith.hasClaimableBalances).toBe(true);
     expect(resultWith.claimableBalanceCount).toBe(2);
     expect(resultWith.accountFunded).toBe(false); // still unfunded
+    expect(resultWith.reasonCode).toBe('ACCOUNT_NOT_FUNDED');
+    expect(resultWith.failedCheckLabels).toEqual(['account_funded', 'trustline', 'xlm_reserve']);
+    expect(resultWith.checks.find((c) => c.label === 'Claimable balances')?.passed).toBe(true);
 
     const resultEmpty = unfundedAccountResult(TEST_ADDRESS, configCount, undefined, 0);
     expect(resultEmpty.checks.some((c) => c.label === 'Claimable balances')).toBe(false);
@@ -1261,11 +1258,56 @@ describe('claimable-balance-aware funded definition (Issue #260)', () => {
     expect(resultEmpty.hasClaimableBalances).toBe(false);
   });
 
+  it('count policy carries claimant endpoint results into comment and action outputs', async () => {
+    const fetchFn = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ _embedded: { records: [{ id: 'cb-1' }, { id: 'cb-2' }] } }),
+    });
+    const claimableCount = await fetchClaimableBalanceCount(
+      'https://horizon.stellar.org',
+      TEST_ADDRESS,
+      fetchFn as any,
+    );
+    const config = {
+      ...defaultConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      claimableBalancePolicy: 'count' as const,
+    };
+    const result = unfundedAccountResult(TEST_ADDRESS, config, undefined, claimableCount);
+    const comment = formatCommentBody(result, {
+      ...config,
+      stellarAddress: TEST_ADDRESS,
+      horizonUrl: 'https://horizon.stellar.org',
+    });
+    const outputs = toActionOutputs(result, undefined, undefined, {
+      validatedAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    expect(claimableCount).toBe(2);
+    expect(result.valid).toBe(false);
+    expect(result.reasonCode).toBe('ACCOUNT_NOT_FUNDED');
+    expect(comment).toContain('2 claimable balance(s)');
+    expect(comment).toContain('Reason code: `ACCOUNT_NOT_FUNDED`');
+    expect(outputs.ready).toBe('false');
+    expect(outputs.reason_code).toBe('ACCOUNT_NOT_FUNDED');
+    expect(JSON.parse(outputs.checks_json)).toContainEqual(
+      expect.objectContaining({ label: 'Claimable balances', passed: true }),
+    );
+  });
+
   it('ignore policy: unfunded with claimables still no hint (default behavior preserved)', async () => {
     const configIgnore = { ...defaultConfig, claimableBalancePolicy: 'ignore' as const };
     const result = unfundedAccountResult(TEST_ADDRESS, configIgnore, undefined, 5);
     expect(result.checks.some((c) => c.label === 'Claimable balances')).toBe(false);
     expect(result.checks.find((c) => c.label === 'Account funded')!.detail).not.toContain('claimable');
+    expect(result.reasonCode).toBe('ACCOUNT_NOT_FUNDED');
+    expect(result.failedCheckLabels).toEqual(['account_funded', 'trustline', 'xlm_reserve']);
+    const comment = formatCommentBody(result, {
+      ...configIgnore,
+      stellarAddress: TEST_ADDRESS,
+      horizonUrl: 'https://horizon.stellar.org',
+    });
+    expect(comment).not.toContain('claimable balance');
   });
 
   it('count policy: funded account with claimables adds informational claimable check but valid unchanged', async () => {

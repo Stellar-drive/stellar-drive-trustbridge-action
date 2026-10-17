@@ -78,7 +78,7 @@ import { globalMetrics, writeJobSummary } from './metrics';
 import { RateBudgetTracker, CircuitBreaker, RateBudgetExhaustedError } from './resilience';
 import { validateContractAddress, clearSpans, getSpans } from './validation';
 import { parseLocaleInput } from './i18n';
-import { sendWebhookNotification } from './webhook';
+import { listenForRunnerCancellation, sendWebhookNotification } from './webhook';
 import { runIssuesPreflight } from './preflight';
 import { loadCodeowners, isMaintainerActor } from './codeowners';
 import { fetchDashboardRoster } from './roster';
@@ -2254,19 +2254,28 @@ async function run(): Promise<void> {
   if (webhookUrl) {
     const { owner, repo } = github.context.repo;
     const issueNumber = github.context.payload.issue?.number ?? null;
-    await sendWebhookNotification(
-      result,
-      effectiveResolvedAddress,
-      {
-        webhookUrl,
-        webhookSecret,
-        timeoutMs: webhookTimeoutMs,
-        authMode: webhookAuthMode,
-        oidcAudience: webhookOidcAudience,
-      },
-      `${owner}/${repo}`,
-      issueNumber,
+    const webhookAbortController = new AbortController();
+    const removeRunnerCancellationListeners = listenForRunnerCancellation(
+      webhookAbortController,
     );
+    try {
+      await sendWebhookNotification(
+        result,
+        effectiveResolvedAddress,
+        {
+          webhookUrl,
+          webhookSecret,
+          timeoutMs: webhookTimeoutMs,
+          authMode: webhookAuthMode,
+          oidcAudience: webhookOidcAudience,
+          signal: webhookAbortController.signal,
+        },
+        `${owner}/${repo}`,
+        issueNumber,
+      );
+    } finally {
+      removeRunnerCancellationListeners();
+    }
   }
 
   if (debugMode) {

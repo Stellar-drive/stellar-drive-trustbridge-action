@@ -318,7 +318,8 @@ inputs:
     description: >-
       Maximum time in milliseconds to wait for the webhook endpoint to
       respond. When the timeout elapses the request is aborted and a warning
-      is logged — comment posting and validation results are unaffected.
+      is logged — comment posting and validation results are unaffected. An
+      Actions runner cancellation signal also aborts the in-flight request.
       Default 5000 (5 seconds). (Issue #101)
     required: false
     default: "5000"
