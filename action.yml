@@ -816,8 +816,10 @@ inputs:
 
   privacy_mode:
     description: >-
-      When true, redact Stellar addresses and balances from the workflow log
-      output. The sticky comment is unaffected. Defaults to false.
+      When true, redact Stellar addresses (G‑ and C‑addresses) from the workflow
+      log output and from issue comments. SEP-0007 wallet deep links are omitted
+      from comments because they require the full destination address.
+      Defaults to false.
     required: false
     default: 'false'
 

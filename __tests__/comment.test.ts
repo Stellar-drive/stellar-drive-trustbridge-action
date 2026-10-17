@@ -1,4 +1,4 @@
-﻿import * as fs from 'fs';
+import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as github from '@actions/github';
@@ -1672,5 +1672,135 @@ describe('Issue #434 — circuit-breaker open comment section', () => {
     expect(bannerBlock).not.toContain(circuitConfig.horizonUrl);
     // Balances stay "unknown" rather than leaking a stale figure.
     expect(body).toContain('**Native XLM balance:** _unknown_');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #691 — Soroban C-address comment redaction parity with logs
+// ---------------------------------------------------------------------------
+
+describe('Issue #691 — privacy mode redacts C-addresses in comments', () => {
+  const gAddress = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
+  const cAddress = 'CCXJ2GPAR7WR4IF7YK67VFEJEUPZJ3G7X52I4BN2PFN66Y35JSSXVP2P';
+  const issuer = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+
+  it('does not redact addresses when privacy mode is off (default)', () => {
+    const body = formatCommentBody(validationResult, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+    });
+    expect(body).toContain(gAddress);
+    expect(body).toContain(issuer);
+  });
+
+  it('redacts G-address in comment body when privacy mode is on', () => {
+    const body = formatCommentBody(validationResult, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      privacyMode: true,
+    });
+    // Full address must not appear
+    expect(body).not.toContain(gAddress);
+    // Redacted form appears instead
+    expect(body).toContain(`${gAddress.slice(0, 4)}...${gAddress.slice(-4)}`);
+  });
+
+  it('redacts C-address in comment body when privacy mode is on', () => {
+    const body = formatCommentBody(validationResult, {
+      ...baseConfig,
+      stellarAddress: cAddress,
+      horizonUrl: 'https://horizon.stellar.org',
+      privacyMode: true,
+    });
+    expect(body).not.toContain(cAddress);
+    expect(body).toContain(`${cAddress.slice(0, 4)}...${cAddress.slice(-4)}`);
+  });
+
+  it('redacts the asset issuer when privacy mode is on', () => {
+    const body = formatCommentBody(validationResult, {
+      ...baseConfig,
+      stellarAddress: cAddress,
+      horizonUrl: 'https://horizon.stellar.org',
+      privacyMode: true,
+    });
+    expect(body).not.toContain(issuer);
+    expect(body).toContain(`${issuer.slice(0, 4)}...${issuer.slice(-4)}`);
+  });
+
+  it('omits SEP-0007 deep links when privacy mode is on', () => {
+    const body = formatCommentBody(validationResult, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      sep0007DeepLinks: true,
+      privacyMode: true,
+    });
+    expect(body).not.toContain('web+stellar:');
+    expect(body).not.toContain('sendXlmToActivate');
+  });
+
+  it('includes SEP-0007 deep links normally when privacy mode is off', () => {
+    const body = formatCommentBody(
+      {
+        valid: false,
+        accountFunded: false,
+        trustlineExists: false,
+        xlmBalance: '0',
+        xlmReserveMet: false,
+        checks: [{ passed: false, label: 'Account funded', detail: 'not found' }],
+      },
+      {
+        ...baseConfig,
+        horizonUrl: 'https://horizon.stellar.org',
+        sep0007DeepLinks: true,
+      },
+    );
+    expect(body).toContain('web+stellar:');
+  });
+
+  it('redacts C-address in Stellar Laboratory account viewer link', () => {
+    const body = formatCommentBody(validationResult, {
+      ...baseConfig,
+      stellarAddress: cAddress,
+      horizonUrl: 'https://horizon.stellar.org',
+      privacyMode: true,
+    });
+    // The link URL must not contain the full C-address
+    expect(body).not.toContain(`account=${cAddress}`);
+    expect(body).toContain(`account=${`${cAddress.slice(0, 4)}...${cAddress.slice(-4)}`}`);
+  });
+
+  it('redacts address in custom comment template context when privacy mode is on', () => {
+    // The template gets the address via buildTemplateContext, which should
+    // receive the redacted address when privacy mode is on.
+    // We verify that the placeholder interpolation in the comment doesn't
+    // contain the full address by checking the body.
+    const body = formatCommentBody(validationResult, {
+      ...baseConfig,
+      stellarAddress: cAddress,
+      horizonUrl: 'https://horizon.stellar.org',
+      privacyMode: true,
+    });
+    expect(body).not.toContain(cAddress);
+    expect(body).toContain(`${cAddress.slice(0, 4)}...${cAddress.slice(-4)}`);
+  });
+
+  it('uses consistent redaction format between G and C addresses', () => {
+    // Both G and C addresses should use the first-4...last-4 format
+    const gBody = formatCommentBody(validationResult, {
+      ...baseConfig,
+      horizonUrl: 'https://horizon.stellar.org',
+      privacyMode: true,
+    });
+    const cBody = formatCommentBody(validationResult, {
+      ...baseConfig,
+      stellarAddress: cAddress,
+      horizonUrl: 'https://horizon.stellar.org',
+      privacyMode: true,
+    });
+    // Both should use the same redaction pattern — first 4 + ... + last 4
+    const gRedacted = `${gAddress.slice(0, 4)}...${gAddress.slice(-4)}`;
+    const cRedacted = `${cAddress.slice(0, 4)}...${cAddress.slice(-4)}`;
+    expect(gBody).toContain(gRedacted);
+    expect(cBody).toContain(cRedacted);
   });
 });
