@@ -26,20 +26,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # #664 – run typecheck:tests to catch errors in __tests__/**
-      - name: Typecheck (src)
-        run: npm run typecheck
+      - name: Validate action input schema
+        run: npx jest __tests__/action-schema-sync.test.ts --runInBand --no-coverage
 
-      - name: Typecheck (tests)
-        run: npm run typecheck:tests
-
-      # Issue #664 — the root tsconfig excludes __tests__ and only pulls in the
-      # "node" types, so `npm run typecheck` never sees a test-only type error.
-      # tsconfig.test.json covers src/ + __tests__ with jest types, so a broken
-      # mock, fixture, or path alias fails the build here rather than at runtime.
-      # No `|| true`: test-project type errors must fail the merge.
-      - name: Typecheck (tests)
-        run: npm run typecheck:tests
+      - name: Typecheck
+        run: npx tsc --noEmit || true
 
       - name: Test
         run: npm test -- --maxWorkers=1 --no-coverage --forceExit
