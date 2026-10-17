@@ -32,5 +32,8 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit || true
 
+      - name: reason_code docs in sync with catalog
+        run: npm run reason-codes:check
+
       - name: Test
         run: npm run test:coverage -- --maxWorkers=1 --forceExit
