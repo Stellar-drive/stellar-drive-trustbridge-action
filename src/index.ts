@@ -1999,6 +1999,7 @@ async function run(): Promise<void> {
     try {
       commentUrl = await postDiscussionComment(githubToken, discussionBody, {
         sticky: stickyComment,
+        commentMode: commentThreadingMode,
         forceComment,
         snoozeWindowMs,
       });
