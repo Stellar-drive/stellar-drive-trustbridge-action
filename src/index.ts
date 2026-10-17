@@ -408,6 +408,99 @@ function resolveConfiguredReadyLabels(): {
   return { passLabel: resolved.passLabel, failLabel: resolved.failLabel };
 }
 
+/**
+ * Result of evaluating the milestone gate (Issue #230).
+ */
+export interface MilestoneGateDecision {
+  /** True when the issue/PR should be skipped because of the milestone gate. */
+  shouldSkip: boolean;
+  /** Human-readable reason for the skip (empty when shouldSkip is false). */
+  reason: string;
+  /** Full message including the "Skipping validation." suffix. */
+  fullMessage: string;
+  /** The raw milestone title from the event payload (empty if none). */
+  milestoneTitle: string;
+}
+
+/**
+ * Evaluate the milestone gate for the given event payload.
+ *
+ * When `milestone_allowlist` is set and non-empty, the issue/PR's milestone
+ * is checked against the allowlist. If the milestone is missing or not in the
+ * list, the result indicates the step should be skipped (with the reason).
+ *
+ * This function is side-effect-free so it can be unit-tested without mocking
+ * `@actions/core`.
+ */
+export function evaluateMilestoneGate(
+  milestoneAllowlistRaw: string,
+  _milestoneFailOnSkip: boolean,
+  payload: Record<string, unknown>,
+): MilestoneGateDecision {
+  const empty: MilestoneGateDecision = {
+    shouldSkip: false,
+    reason: '',
+    fullMessage: '',
+    milestoneTitle: '',
+  };
+
+  const raw = milestoneAllowlistRaw.trim();
+  if (!raw) {
+    return empty;
+  }
+
+  const allowedMilestones = raw
+    .split(",")
+    .map((m) => m.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (allowedMilestones.length === 0) {
+    return empty;
+  }
+
+  const p = payload as Record<string, unknown>;
+  const isIssueContext = p.issue !== undefined;
+  const isPullRequest = p.pull_request !== undefined;
+
+  let currentMilestoneRaw = '';
+  if (isIssueContext) {
+    const issue = p.issue as { milestone?: { title?: string } } | undefined;
+    if (issue?.milestone) {
+      currentMilestoneRaw = issue.milestone.title || '';
+    }
+  } else if (isPullRequest) {
+    const pr = p.pull_request as { milestone?: { title?: string } } | undefined;
+    if (pr?.milestone) {
+      currentMilestoneRaw = pr.milestone.title || '';
+    }
+  }
+  const currentMilestone = currentMilestoneRaw.trim().toLowerCase();
+
+  let skipReason = '';
+  if (!currentMilestone) {
+    skipReason =
+      'Milestone gate: No milestone found on this event, but milestone_allowlist is active.';
+  } else if (!allowedMilestones.includes(currentMilestone)) {
+    skipReason = `Milestone gate: Milestone "${currentMilestoneRaw}" is not in the allowlist.`;
+  }
+
+  if (skipReason) {
+    return {
+      shouldSkip: true,
+      reason: skipReason,
+      fullMessage: `${skipReason} Skipping validation.`,
+      milestoneTitle: currentMilestoneRaw,
+    };
+  }
+
+  return {
+    shouldSkip: false,
+    reason: '',
+    fullMessage: '',
+    milestoneTitle: currentMilestoneRaw,
+  };
+}
+
 async function run(): Promise<void> {
   // Clear any trace spans from previous runs (safety)
   clearTraceSpans();
@@ -420,51 +513,29 @@ async function run(): Promise<void> {
     false,
   );
 
-  if (milestoneAllowlistRaw.trim()) {
-    const allowedMilestones = milestoneAllowlistRaw
-      .split(",")
-      .map((m) => m.trim().toLowerCase())
-      .filter(Boolean);
-    const payload = github.context.payload;
-    const isIssueContext = payload.issue !== undefined;
-    const isPullRequest = payload.pull_request !== undefined;
+  const milestoneDecision = evaluateMilestoneGate(
+    milestoneAllowlistRaw,
+    milestoneFailOnSkip,
+    github.context.payload,
+  );
 
-    let currentMilestone = "";
-    let currentMilestoneRaw = "";
-    if (isIssueContext && payload.issue?.milestone) {
-      currentMilestoneRaw = payload.issue.milestone.title || "";
-    } else if (isPullRequest && payload.pull_request?.milestone) {
-      currentMilestoneRaw = payload.pull_request.milestone.title || "";
+  if (milestoneDecision.shouldSkip) {
+    const fullMessage = milestoneDecision.fullMessage;
+    if (milestoneFailOnSkip) {
+      core.setFailed(fullMessage);
+    } else {
+      core.info(fullMessage);
     }
-    currentMilestone = currentMilestoneRaw.trim().toLowerCase();
 
-    if (allowedMilestones.length > 0) {
-      let skipReason = "";
-      if (!currentMilestone) {
-        skipReason = `Milestone gate: No milestone found on this event, but milestone_allowlist is active.`;
-      } else if (!allowedMilestones.includes(currentMilestone)) {
-        skipReason = `Milestone gate: Milestone "${currentMilestoneRaw}" is not in the allowlist.`;
-      }
+    core.setOutput("ready", "false");
+    core.setOutput("reason_code", "MILESTONE_GATE_SKIPPED");
+    core.setOutput("checks_json", "[]");
 
-      if (skipReason) {
-        const fullMessage = `${skipReason} Skipping validation.`;
-        if (milestoneFailOnSkip) {
-          core.setFailed(fullMessage);
-        } else {
-          core.info(fullMessage);
-        }
+    core.summary.addHeading("Milestone Gate Skipped", 3);
+    core.summary.addRaw(fullMessage);
+    await core.summary.write();
 
-        core.setOutput("ready", "false");
-        core.setOutput("reason_code", "MILESTONE_GATE_SKIPPED");
-        core.setOutput("checks_json", "[]");
-
-        core.summary.addHeading("Milestone Gate Skipped", 3);
-        core.summary.addRaw(fullMessage);
-        await core.summary.write();
-
-        return;
-      }
-    }
+    return;
   }
 
   // CODEOWNERS / Maintainer skip check (Issue #241 — opt-in).
