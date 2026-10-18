@@ -1,14 +1,8 @@
 import * as tls from 'tls';
 import * as crypto from 'crypto';
 import { defaultCache, SimpleCache } from './cache';
-import { logger, redactHorizonUrl, redactStellarAddress, redactString, LogContext } from './logger';
-import { inferStellarNetwork } from './links';
-import { globalMetrics } from './metrics';
-import { RateBudgetTracker, CircuitBreaker, CircuitOpenError } from './resilience';
-import { validateHorizonUrl } from './validation';
-import { traceHorizonFetch } from './tracing';
-import { createProxiedFetch } from './proxy';
-
+import { logger, redactHorizonUrl, redactString, LogContext } from './logger';
+import { RateBudgetTracker, RateBudgetExhaustedError } from './resilience';
 export interface HorizonBalanceNative {
   balance: string;
   asset_type: "native";
@@ -223,48 +217,9 @@ export interface FetchAccountOptions {
   cacheTtlMs?: number;
   cache?: SimpleCache;
   fetchFn?: FetchLike;
-  /**
-   * Optional AbortSignal from a parent controller (e.g. job cancellation).
-   * When the signal fires, in-flight and pending requests are aborted
-   * immediately; no misleading "account not funded" result is produced.
-   */
-  signal?: AbortSignal;
-  horizonMaxRequests?: number;
-  retryBaseDelayMs?: number;
-  retryMaxDelayMs?: number;
-  retryMaxTotalWaitMs?: number;
   rateBudgetTracker?: RateBudgetTracker;
-  /**
-   * Optional circuit breaker for Horizon fetches (Issue #209).
-   * When the circuit is open, requests are fast-failed without reaching
-   * the network. Cache hits bypass the circuit breaker.
-   */
-  circuitBreaker?: CircuitBreaker;
-  /**
-   * By default, a fallback URL that resolves to a *different* Stellar
-   * network than the primary `horizon_url` (public vs testnet, inferred
-   * from the URL) is never used — a G-address is valid on every network,
-   * so a cross-network fallback can silently return funded/trustline/
-   * reserve data for the wrong ledger instead of failing loudly. Set this
-   * to `true` to opt into cross-network fallback anyway (e.g. deliberate
-   * multi-network setups).
-   */
-  allowCrossNetworkFallback?: boolean;
-  /**
-   * Alias for `allowCrossNetworkFallback` kept for older call sites / tests.
-   * Prefer `allowCrossNetworkFallback`.
-   */
-  allowCrossNetworkFailover?: boolean;
-  /** Optional secondary Horizon URL used for same-network failover. */
-  secondaryHorizonUrl?: string;
-  /**
-   * Optional SHA-256 certificate fingerprint to pin the Horizon TLS cert.
-   * When set, a pre-flight TLS probe is performed before the first fetch.
-   * Mismatch throws HorizonPinMismatchError immediately (not retried).
-   * Leave empty (default) to use standard WebPKI certificate validation only.
-   * (Issue #303)
-   */
-  pinFingerprint?: string;
+  /** Optional AbortSignal to cancel the request early. */
+  signal?: AbortSignal;
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -561,13 +516,8 @@ async function fetchAccountOnce(
   stellarAddress: string,
   timeoutMs: number,
   maxRetries: number,
-  endpointKind: "primary" | "fallback",
-  retryMaxDelayMs: number,
-  retryMaxTotalWaitMs: number,
-  parentSignal?: AbortSignal,
-  rateBudgetTracker?: RateBudgetTracker,
-  circuitBreaker?: CircuitBreaker,
-  retryBaseDelayMs: number = DEFAULT_RETRY_BASE_DELAY_MS,
+  endpointKind: 'primary' | 'fallback',
+  externalSignal?: AbortSignal,
 ): Promise<FetchOnceResult> {
   const normalizedHorizonUrl = normalizeHorizonUrl(targetHorizonUrl);
   const url = `${normalizedHorizonUrl}/accounts/${stellarAddress}`;
@@ -591,26 +541,26 @@ async function fetchAccountOnce(
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-    // Propagate the parent cancellation signal to the per-request controller.
-    let parentAbortHandler: (() => void) | undefined;
-    if (parentSignal) {
-      parentAbortHandler = () => controller.abort();
-      parentSignal.addEventListener("abort", parentAbortHandler);
+    // If external signal is provided, abort our controller when it aborts
+    const onExternalAbort = () => controller.abort();
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        clearTimeout(timer);
+        throw new HorizonError('Horizon request aborted', 499, false);
+      }
+      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
     }
 
-    logger.debug(
-      "Horizon fetch start",
-      safeHorizonContext({
-        component: "horizon",
-        stellarAddress,
-        horizonUrl: targetHorizonUrl,
-        endpointKind,
-        attempt,
-        maxAttempts: maxRetries + 1,
-        timeoutMs,
-        url: safeUrlForLog,
-      }),
-    );
+    logger.debug('Horizon fetch start', safeHorizonContext({
+      component: 'horizon',
+      stellarAddress,
+      horizonUrl: targetHorizonUrl,
+      endpointKind,
+      attempt,
+      maxAttempts: maxRetries + 1,
+      timeoutMs,
+      url: safeUrlForLog,
+    }));
 
     try {
       if (rateBudgetTracker) {
@@ -928,8 +878,8 @@ async function fetchAccountOnce(
       throw lastError;
     } finally {
       clearTimeout(timer);
-      if (parentSignal && parentAbortHandler) {
-        parentSignal.removeEventListener("abort", parentAbortHandler);
+      if (externalSignal) {
+        externalSignal.removeEventListener('abort', onExternalAbort);
       }
     }
   }
@@ -987,15 +937,23 @@ export async function fetchAccount(
     const fetch: FetchLike =
       options.fetchFn ?? (await import('node-fetch')).default;
 
-    // Bail out immediately if the job was already cancelled before we start.
-    if (signal?.aborted) {
-      throw new HorizonError('Horizon request aborted (job cancelled).', 0, false);
-    }
+  // Consume rate budget for the primary request (after cache miss)
+  if (options.rateBudgetTracker) {
+    options.rateBudgetTracker.recordRequest();
+  }
 
-    const cachingEnabled = cacheTtlMs > 0;
-    const cacheKey = cachingEnabled
-      ? buildCacheKey(normalizedHorizonUrl, stellarAddress)
-      : '';
+  let primaryError: HorizonError | undefined;
+
+  try {
+    const result = await fetchAccountOnce(
+      fetch,
+      normalizedHorizonUrl,
+      stellarAddress,
+      timeoutMs,
+      maxRetries,
+      'primary',
+      options.signal,
+    );
 
     if (cachingEnabled) {
       const cacheStatsBefore = redactCacheStats(cache.getStats());
@@ -1107,8 +1065,26 @@ export async function fetchAccount(
     const fallbackNetwork = inferStellarNetwork(normalizedFallbackUrl);
     const crossNetworkFallback = primaryNetwork !== fallbackNetwork;
 
-    if (crossNetworkFallback && !allowCrossNetwork) {
-      logger.debug('Horizon RPC fallback skipped: primary and fallback resolve to different networks', safeHorizonContext({
+  // Consume rate budget for the fallback request
+  if (options.rateBudgetTracker) {
+    options.rateBudgetTracker.recordRequest();
+  }
+
+  try {
+    const fallbackResult = await fetchAccountOnce(
+      fetch,
+      normalizedFallbackUrl,
+      stellarAddress,
+      timeoutMs,
+      maxRetries,
+      'fallback',
+      options.signal,
+    );
+
+    if (cachingEnabled) {
+      cache.set(cacheKey, fallbackResult.account, cacheTtlMs);
+      const cacheStatsAfter = redactCacheStats(cache.getStats());
+      logger.debug('Horizon cache populate after fallback success', safeHorizonContext({
         component: 'horizon',
         stellarAddress,
         horizonUrl,

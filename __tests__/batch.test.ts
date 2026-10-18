@@ -5,6 +5,7 @@ import {
   buildBatchSummary,
   formatBatchSummaryMarkdown,
   CLAWBACK_STRICT_REASON_CODE,
+  BATCH_REASON_CODES,
   BatchAddressResult,
 } from '../src/batch';
 import { CheckConfig } from '../src/checks';
@@ -12,6 +13,7 @@ import * as horizon from '../src/horizon';
 import type { HorizonAccount } from '../src/horizon';
 import * as comment from '../src/comment';
 import { run } from '../src/index';
+import { RateBudgetTracker } from '../src/resilience';
 
 jest.mock('@actions/core');
 
@@ -322,6 +324,29 @@ describe('runBatchValidation', () => {
     expect(results[2].address).toBe(VALID_ADDR_MISSING_ON_HORIZON);
     expect(results[2].valid).toBe(false);
     expect(results[2].failureReason).toContain('not funded');
+  });
+
+  it('stops batch early and emits RATE_BUDGET_EXHAUSTED when rate budget is exceeded', async () => {
+    const tracker = new RateBudgetTracker(1);
+    mockFetchAccount.mockResolvedValue(FUNDED_ACCOUNT as any);
+
+    const results = await runBatchValidation(
+      [VALID_ADDR, VALID_ADDR_2, VALID_ADDR_3],
+      DEFAULT_CONFIG,
+      'https://horizon.stellar.org',
+      {
+        requestDelayMs: 0,
+        fetchOptions: { rateBudgetTracker: tracker },
+      },
+    );
+
+    expect(results).toHaveLength(3);
+    expect(results[0].valid).toBe(true);
+    expect(results[1].valid).toBe(false);
+    expect(results[1].reasonCode).toBe(BATCH_REASON_CODES.rateBudgetExhausted);
+    expect(results[2].valid).toBe(false);
+    expect(results[2].reasonCode).toBe(BATCH_REASON_CODES.rateBudgetExhausted);
+    expect(mockFetchAccount).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -6,9 +6,10 @@
  * on Horizon predictable and avoids triggering rate limits.
  */
 
-import { CheckConfig, runAccountChecks, unfundedAccountResult, horizonFailureResult, isValidStellarAddress } from './checks';
+import { CheckConfig, runAccountChecks, unfundedAccountResult, horizonFailureResult, isValidStellarAddress, rateBudgetExhaustedResult } from './checks';
 import { fetchAccount, HorizonError, findTrustlineBalance, HorizonAccount } from './horizon';
 import { FetchAccountOptions } from './horizon';
+import { RateBudgetTracker, RateBudgetExhaustedError } from './resilience';
 import { globalMetrics } from './metrics';
 import { getAssetClawbackStatus, AssetConfigInput } from './assets';
 
@@ -38,6 +39,7 @@ export const BATCH_REASON_CODES = {
   accountNotFunded: 'ACCOUNT_NOT_FUNDED',
   horizonError: 'HORIZON_ERROR',
   invalidAddress: 'INVALID_ADDRESS',
+  rateBudgetExhausted: 'RATE_BUDGET_EXHAUSTED',
   clawbackStrict: CLAWBACK_STRICT_REASON_CODE,
 } as const;
 
@@ -373,8 +375,13 @@ export async function runBatchValidation(
     } catch (error) {
       let failureReason: string;
       let isFunded = false;
+      let isBudgetExhausted = error instanceof RateBudgetExhaustedError;
 
-      if (error instanceof HorizonError && error.statusCode === 404) {
+      if (isBudgetExhausted) {
+        failureReason = `Rate budget exhausted: ${error.message}`;
+        globalMetrics.incrementCounter('rate_budget_exhausted');
+        globalMetrics.incrementCounter('batch_fail_rate_budget_exhausted');
+      } else if (error instanceof HorizonError && error.statusCode === 404) {
         failureReason = 'account not funded';
         globalMetrics.incrementCounter('batch_fail_account_not_funded');
       } else if (error instanceof HorizonError) {
@@ -387,13 +394,20 @@ export async function runBatchValidation(
         globalMetrics.incrementCounter('batch_fail_horizon_error');
       }
 
-      const syntheticResult =
-        error instanceof HorizonError && error.statusCode === 404
-          ? unfundedAccountResult(address, config)
-          : horizonFailureResult(
-              error instanceof Error ? error.message : 'unknown error',
-              config,
-            );
+      let syntheticResult;
+      if (isBudgetExhausted) {
+        syntheticResult = rateBudgetExhaustedResult(
+          error instanceof Error ? error.message : 'unknown error',
+          config,
+        );
+      } else if (error instanceof HorizonError && error.statusCode === 404) {
+        syntheticResult = unfundedAccountResult(address, config);
+      } else {
+        syntheticResult = horizonFailureResult(
+          error instanceof Error ? error.message : 'unknown error',
+          config,
+        );
+      }
 
       results.push({
         address,
@@ -403,16 +417,44 @@ export async function runBatchValidation(
         xlmBalance: syntheticResult.xlmBalance,
         xlmReserveMet: false,
         failureReason,
-        reasonCode: deriveBatchReasonCode(false, {
-          clawbackStrictFailure: false,
-          invalidAddress: false,
-          accountNotFunded:
-            error instanceof HorizonError && error.statusCode === 404,
-          horizonError: true,
-        }),
+        reasonCode: isBudgetExhausted
+          ? BATCH_REASON_CODES.rateBudgetExhausted
+          : deriveBatchReasonCode(false, {
+              clawbackStrictFailure: false,
+              invalidAddress: false,
+              accountNotFunded:
+                error instanceof HorizonError && error.statusCode === 404,
+              horizonError: true,
+            }),
         clawbackStrictFailure: false,
         clawbackStrictAssets: [],
       });
+
+      // Stop batch early if rate budget exhausted
+      if (isBudgetExhausted) {
+        // Mark remaining addresses as budget exhausted
+        for (let j = i + 1; j < addresses.length; j++) {
+          const remainingAddress = addresses[j];
+          const exhaustedResult = rateBudgetExhaustedResult(
+            'Rate budget exhausted before checking this address',
+            config,
+          );
+          results.push({
+            address: remainingAddress,
+            valid: false,
+            accountFunded: false,
+            trustlineExists: false,
+            xlmBalance: exhaustedResult.xlmBalance,
+            xlmReserveMet: false,
+            failureReason: 'Rate budget exhausted before checking this address',
+            reasonCode: BATCH_REASON_CODES.rateBudgetExhausted,
+            clawbackStrictFailure: false,
+            clawbackStrictAssets: [],
+          });
+          globalMetrics.incrementCounter('batch_fail_rate_budget_exhausted');
+        }
+        break;
+      }
     }
   }
 

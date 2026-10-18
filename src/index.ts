@@ -7,6 +7,7 @@ import {
   runMultiAssetChecks,
   unfundedAccountResult,
   validateStellarAddress,
+  rateBudgetExhaustedResult,
 } from './checks';
 import { fetchAccount, getAssetBalance, HorizonError, waitForFundedAccount } from './horizon';
 import { formatCommentBody, postIssueComment } from './comment';
@@ -18,8 +19,15 @@ import { logger, emitInputsLogRecord } from './logger';
 import { globalMetrics } from './metrics';
 import { validateContractAddress, clearSpans, getSpans } from './validation';
 import { readTrustbridgeConfig } from './configReader';
+import { RateBudgetTracker, RateBudgetExhaustedError } from './resilience';
 
 async function run(): Promise<void> {
+  const jobController = new AbortController();
+  try {
+    process.on('SIGINT', () => jobController.abort());
+    process.on('SIGTERM', () => jobController.abort());
+  } catch {}
+
   const horizonUrl = core.getInput('horizon_url') || 'https://horizon.stellar.org';
   const assetCode = core.getInput('asset_code') || 'USDC';
   const assetIssuer =
@@ -56,9 +64,15 @@ async function run(): Promise<void> {
     min: 0,
     max: 3_600_000,
   });
+  const horizonMaxRequests = parseNumberInput(core.getInput('horizon_max_requests'), 0, {
+    min: 0,
+  });
   const useCache = parseBooleanInput(core.getInput('use_cache'), false);
   const logInputs = parseBooleanInput(core.getInput('log_inputs'), false);
   const trustbridgeConfigPath = core.getInput('trustbridge_config_path') || '.trustbridge.yml';
+
+  // Create RateBudgetTracker if horizon_max_requests > 0
+  const rateBudgetTracker = horizonMaxRequests > 0 ? new RateBudgetTracker(horizonMaxRequests) : undefined;
   const githubToken = core.getInput('github_token', { required: true });
 
   // SEP-0007 wallet deep links (Issue #44)
@@ -182,6 +196,7 @@ async function run(): Promise<void> {
     fallbackUrls,
     cacheTtlMs: useCache ? horizonCacheTtlMs : 0,
     useCache,
+    rateBudgetTracker,
   };
 
   try {
@@ -193,6 +208,7 @@ async function run(): Promise<void> {
             timeoutMs: waitUntilFundedTimeoutMs,
             pollIntervalMs: waitUntilFundedIntervalMs,
             requestTimeoutMs: horizonTimeoutMs,
+            signal: jobController.signal,
             onPoll: (attempt, elapsedMs) =>
               logger.debug(`Account not yet funded — polling again`, {
                 component: 'index',
@@ -240,7 +256,20 @@ async function run(): Promise<void> {
       }));
     }
   } catch (error) {
-    if (error instanceof HorizonError && error.statusCode === 404) {
+    if (error instanceof RateBudgetExhaustedError) {
+      globalMetrics.incrementCounter('rate_budget_exhausted');
+      result = rateBudgetExhaustedResult(error.message, checkConfig);
+    } else if (
+      jobController.signal.aborted ||
+      (error instanceof HorizonError && error.statusCode === 499) ||
+      (error instanceof Error && error.name === 'AbortError') ||
+      (error instanceof Error && error.message.toLowerCase().includes('aborted')) ||
+      (error instanceof Error && error.message.toLowerCase().includes('cancelled'))
+    ) {
+      logger.info('Funding poll stopped due to cancellation');
+      core.info('Funding poll stopped due to cancellation');
+      result = horizonFailureResult('Funding poll cancelled', checkConfig);
+    } else if (error instanceof HorizonError && error.statusCode === 404) {
       result = unfundedAccountResult(stellarAddress, checkConfig);
     } else if (error instanceof HorizonError) {
       core.error(error.message);
