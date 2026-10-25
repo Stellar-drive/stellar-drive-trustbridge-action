@@ -260,6 +260,11 @@ export function formatDigestComment(report: DigestReport): string {
     lines.push('');
   }
 
+  lines.push(
+    '---',
+    '_Posted by [stellar-drive-trustbridge-action](https://github.com/Stellar-drive/stellar-drive-trustbridge-action) — digest mode_',
+  );
+
   return lines.join('\n');
 }
 
