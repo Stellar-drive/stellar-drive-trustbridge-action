@@ -799,3 +799,12 @@ Built for the Stellar open-source ecosystem. Horizon data provided by the [Stell
 
 <!-- handsoff-issue-770 -->
 - #770: Harden validation.ts for empty stellar_addresses JSON and oversized maps
+
+## Resolved Issues
+
+The following issues have been addressed in this release:
+
+- Added issue templates for bug reports and feature requests
+- Added contributing guidelines and CODEOWNERS
+- Improved repository documentation and onboarding
+
